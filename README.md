@@ -8,7 +8,7 @@ It features a **modern SQL Developer–style interface** with secure credential 
 ## 🖼️ Screenshots
 
 ### 🏠 Main Dashboard
-![Canvas Data Automator Main UI](./5096d8c8-47f6-45dc-8c4c-257e9c7c1174.png)
+![Canvas Data Automator Main UI](imgs/Screenshot 2025-10-30 131639.png)
 > **Home view:** Start by adding a database connection.  
 > The left sidebar lists active connections, and the main workspace serves as the SQL and results area.
 
