@@ -16,7 +16,7 @@ It features a **modern SQL Developer–style interface** with secure credential 
 ---
 
 ### 🔑 Add Database Connection
-![Add Database Connection Dialog](./78863bd1-5c5e-404e-a45a-a5127e65ff5d.png)
+![Add Database Connection Dialog](https://github.com/mmckie1/Canvas-Data-Automator/blob/test/imgs/Screenshot%202025-10-30%20102236.png?raw=true)
 > **Secure connection setup:** Enter your database credentials (PostgreSQL or Redshift).  
 > Credentials can be securely stored using your system keyring.
 
