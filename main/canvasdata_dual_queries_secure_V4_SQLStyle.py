@@ -11,6 +11,8 @@ import keyring
 import json
 from pathlib import Path
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # ============================================================
 # GLOBAL APPEARANCE (keep V3 styling)
@@ -495,177 +497,10 @@ ORDER BY fs.submitted_at"""
 }
 
 # ============================================================
-# Query Runner (same as V3)
+# Query Runner - REMOVED (replaced with optimized run_query_with_panel_updates)
 # ============================================================
-def run_query(engine, sql, params, name):
-    MAX_ROWS = 1000000
-    CHUNK_SIZE = 100000
-    
-    progress_window = ctk.CTkToplevel()
-    progress_window.title("Running Query")
-    progress_window.geometry("400x150")
-    progress_window.transient()
-    progress_window.grab_set()
-    progress_window.update_idletasks()
-    x = (progress_window.winfo_screenwidth() // 2) - (400 // 2)
-    y = (progress_window.winfo_screenheight() // 2) - (150 // 2)
-    progress_window.geometry(f"400x150+{x}+{y}")
-    
-    progress_frame = ctk.CTkFrame(progress_window, corner_radius=10)
-    progress_frame.pack(padx=20, pady=20, fill="both", expand=True)
-    
-    progress_label = ctk.CTkLabel(progress_frame, text="Initializing query...", font=("Segoe UI", 12))
-    progress_label.pack(pady=10)
-    
-    progress_bar = ctk.CTkProgressBar(progress_frame, width=300)
-    progress_bar.pack(pady=10, padx=20, fill="x")
-    progress_bar.set(0)
-    
-    status_label = ctk.CTkLabel(progress_frame, text="", font=("Segoe UI", 10))
-    status_label.pack(pady=(0, 10))
-    
-    def update_progress(value, text, status=""):
-        progress_bar.set(value)
-        progress_label.configure(text=text)
-        status_label.configure(text=status)
-        progress_window.update()
-    
-    if engine is None:
-        progress_window.destroy()
-        messagebox.showerror("Error", "Database connection is not initialized")
-        return None
-        
-    update_progress(0.1, "Verifying database connection...", "Checking connection status")
-    try:
-        conn = engine.connect()
-        conn.close()
-    except Exception:
-        progress_window.destroy()
-        messagebox.showerror("Connection Error", "Database connection test failed")
-        return None
-    
-    def is_valid_ip(ip):
-        if not ip:
-            return False
-        try:
-            import ipaddress
-            ipaddress.ip_address(ip)
-            return True
-        except Exception:
-            return False
-
-    try:
-        update_progress(0.2, "Preparing query execution...", "Connecting to database")
-        conn = engine.raw_connection()
-        try:
-            update_progress(0.3, "Counting total rows...", "Analyzing query complexity")
-            with conn.cursor() as cur:
-                count_sql = f"SELECT COUNT(*) as count FROM ({sql}) as subquery"
-                cur.execute(count_sql, params)
-                total_rows = cur.fetchone()[0]
-
-            update_progress(0.4, f"Found {total_rows:,} rows", "Preparing data retrieval")
-            
-            if total_rows > MAX_ROWS:
-                progress_window.withdraw()
-                continue_query = messagebox.askyesno(
-                    "Warning",
-                    f"Query will return {total_rows:,} rows. This may take a long time and use significant memory. Continue?"
-                )
-                progress_window.deiconify()
-                if not continue_query:
-                    progress_window.destroy()
-                    return None
-
-            if total_rows > CHUNK_SIZE:
-                update_progress(0.5, "Reading data in chunks...", f"Processing {total_rows:,} rows")
-                chunks = []
-                chunk_count = 0
-                total_chunks = (total_rows // CHUNK_SIZE) + (1 if total_rows % CHUNK_SIZE else 0)
-                
-                for chunk in pd.read_sql(sql, conn, params=params, chunksize=CHUNK_SIZE):
-                    chunks.append(chunk)
-                    chunk_count += 1
-                    chunk_progress = 0.5 + (chunk_count / total_chunks) * 0.2
-                    update_progress(chunk_progress, "Reading data in chunks...", 
-                                  f"Processed chunk {chunk_count}/{total_chunks}")
-                
-                update_progress(0.7, "Combining data chunks...", "Finalizing dataset")
-                df = pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame()
-            else:
-                update_progress(0.5, "Reading data...", f"Loading {total_rows:,} rows")
-                df = pd.read_sql(sql, conn, params=params)
-                update_progress(0.7, "Data loaded successfully", f"Retrieved {len(df):,} rows")
-        finally:
-            conn.close()
-
-    except Exception as e:
-        progress_window.destroy()
-        messagebox.showerror("Query Error", f"Query failed:\n{e}")
-        return None
-
-    update_progress(0.75, "Processing data...", "Cleaning datetime columns")
-    for col in df.select_dtypes(include=["datetimetz"]).columns:
-        df[col] = df[col].dt.tz_localize(None)
-    
-    try:
-        update_progress(0.8, "Processing IP geolocation...", "Looking up geographic data")
-        from ip_geolocation import IPGeolocation
-        geoip = IPGeolocation()
-        ip_column = 'ip_at_submit' if name == 'submissions' else 'ip'
-        
-        if ip_column in df.columns:
-            valid_mask = df[ip_column].apply(is_valid_ip)
-            if not valid_mask.all():
-                invalid_count = (~valid_mask).sum()
-                print(f"Invalid IPs skipped: {invalid_count}")
-            df = geoip.process_dataframe(df[valid_mask], ip_column)
-            update_progress(0.85, "Geolocation complete", "Geographic data added")
-    except Exception as e:
-        print(f"Geolocation processing failed: {e}")
-        update_progress(0.85, "Geolocation skipped", "Continuing without geographic data")
-
-    update_progress(0.9, "Preparing Excel export...", "Calculating file size")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{name.capitalize()}Logs_{params['username']}_{timestamp}.xlsx"
-
-    estimated_size = df.memory_usage(deep=True).sum() / (1024 * 1024)
-    if estimated_size > 50:
-        progress_window.withdraw()
-        continue_export = messagebox.askyesno("Large File Warning", 
-            f"The Excel file will be approximately {estimated_size:.1f}MB. Continue?")
-        if not continue_export:
-            progress_window.destroy()
-            return None
-        progress_window.deiconify()
-
-    update_progress(0.95, "Saving to Excel...", f"Exporting {len(df):,} rows")
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            df.to_excel(filename, index=False)
-            update_progress(1.0, "Export complete!", f"Saved as {filename}")
-            progress_window.destroy()
-            messagebox.showinfo("Success", 
-                f"{name.capitalize()} query completed!\nSaved as: {filename}\n\n"
-                f"Total rows: {len(df):,}\n"
-                f"File size: {estimated_size:.1f}MB")
-            return True
-        except PermissionError:
-            if attempt < max_retries - 1:
-                progress_window.withdraw()
-                retry = messagebox.askretrycancel("File in Use", 
-                    f"Unable to save {filename}. The file may be open. Close it and retry?")
-                if retry:
-                    progress_window.deiconify()
-                    continue
-            progress_window.destroy()
-            messagebox.showerror("Export Error", "Could not save file - it may be open in another program.")
-            return None
-        except Exception as e:
-            progress_window.destroy()
-            messagebox.showerror("Export Error", f"Failed to export to Excel:\n{e}")
-            return None
+# The old run_query function has been removed to avoid conflicts.
+# All query execution now uses the optimized run_query_with_panel_updates method.
 
 # ============================================================
 # Parameter Dialog (unchanged behavior)
@@ -713,12 +548,18 @@ def get_query_parameters():
         params["username"] = username
         params["from_date"] = from_date
         params["to_date"] = to_date
+        params["include_geolocation"] = include_geo_var.get()
+        params["export_excel"] = export_excel_var.get()
+        
+        # DEBUG: Show parameter values
+        print(f"DEBUG: Query parameters - Geolocation: {params['include_geolocation']}, Excel: {params['export_excel']}")
+        
         root.destroy()  # Use destroy() instead of quit() for CTkToplevel
 
     # Create as a modal dialog window (Toplevel, not new CTk instance)
     root = ctk.CTkToplevel()
     root.title("Query Parameters")
-    root.geometry("480x320")
+    root.geometry("480x400")
     root.protocol("WM_DELETE_WINDOW", on_closing)
     
     # Make it modal and bring to front
@@ -740,6 +581,30 @@ def get_query_parameters():
     ctk.CTkLabel(root, text="To Date (YYYY-MM-DD):").pack(anchor="w", padx=30, pady=(10, 0))
     to_entry = ctk.CTkEntry(root, width=300)
     to_entry.pack(padx=30)
+
+    # Options frame
+    options_frame = ctk.CTkFrame(root, fg_color="transparent")
+    options_frame.pack(pady=(15, 0))
+    
+    # Geolocation checkbox
+    include_geo_var = ctk.BooleanVar(value=True)  # Default enabled
+    geo_checkbox = ctk.CTkCheckBox(
+        options_frame,
+        text="Include IP Geolocation",
+        variable=include_geo_var,
+        font=("Segoe UI", 11)
+    )
+    geo_checkbox.pack(anchor="w", padx=30, pady=2)
+    
+    # Excel export checkbox  
+    export_excel_var = ctk.BooleanVar(value=True)  # Default enabled
+    excel_checkbox = ctk.CTkCheckBox(
+        options_frame,
+        text="Export to Excel file",
+        variable=export_excel_var,
+        font=("Segoe UI", 11)
+    )
+    excel_checkbox.pack(anchor="w", padx=30, pady=2)
 
     ctk.CTkButton(root, text="Run Query", command=submit, fg_color="#2b5797",
            font=("Segoe UI", 11, "bold"), corner_radius=10).pack(pady=20)
@@ -901,14 +766,49 @@ class CanvasDataApp:
         self.results_status = ctk.CTkLabel(results_header, text="Ready", font=("Segoe UI", 10))
         self.results_status.pack(side="right", padx=12, pady=8)
         
-        # Results Text Area
+        # Progress Bar Frame (Matrix-themed, hidden by default) - COMPACT SIZE
+        self.progress_frame = ctk.CTkFrame(
+            self.results_panel, 
+            fg_color="#2a2a2a",  # Lighter background for visibility
+            border_width=1,
+            border_color="#00ff00",  # Matrix green border
+            height=60  # Fixed compact height
+        )
+        self.progress_frame.pack(fill="x", padx=8, pady=(2, 0))
+        self.progress_frame.pack_propagate(False)  # Don't expand
+        self.progress_frame.pack_forget()  # Hide initially
+        
+        # Progress bar with Matrix green theme - SMALLER
+        self.progress_bar = ctk.CTkProgressBar(
+            self.progress_frame, 
+            width=300,  # Fixed width instead of fill
+            height=15,  # Much smaller height
+            progress_color="#00ff00",  # Matrix green
+            fg_color="#000000",       # Pure black background for contrast
+        )
+        self.progress_bar.pack(pady=(5, 2), padx=20)  # Smaller padding
+        self.progress_bar.set(0)
+        
+        # Progress label with Matrix styling - SMALLER
+        self.progress_label = ctk.CTkLabel(
+            self.progress_frame, 
+            text="Initializing...", 
+            font=("Consolas", 9),  # Much smaller font
+            text_color="#00ff00"
+        )
+        self.progress_label.pack(pady=(0, 5))
+
+        # Results Text Area (with proper scrolling)
         self.results_text = ctk.CTkTextbox(
             self.results_panel,
             font=("Consolas", 10),
             fg_color="#0f0f0f", 
-            text_color="#00ff00"
+            text_color="#00ff00",
+            wrap="word",  # Enable word wrapping for better readability
+            scrollbar_button_color="#00ff00",  # Matrix green scrollbar
+            scrollbar_button_hover_color="#00aa00"  # Darker green on hover
         )
-        self.results_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.results_text.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
         # Management buttons at bottom
         mgmt = ctk.CTkFrame(self.workspace_frame, height=50, fg_color="#2a2a2a")
@@ -948,9 +848,83 @@ class CanvasDataApp:
             
         if hasattr(self, 'results_status'):
             self.results_status.configure(text="Ready")
+        
+        # Hide progress bar when in ready state
+        self.hide_progress_bar()
+
+    def show_progress_bar(self):
+        """Show the Matrix-themed progress bar"""
+        print("DEBUG: show_progress_bar called")
+        if hasattr(self, 'progress_frame') and hasattr(self, 'progress_bar') and hasattr(self, 'progress_label'):
+            print("DEBUG: All progress components exist, showing progress bar")
+            try:
+                # Show the frame
+                self.progress_frame.pack(fill="x", padx=8, pady=(4, 0))
+                
+                # Initialize with visible progress to test
+                self.progress_bar.set(0.1)  # Set to 10% to make it visible immediately
+                self.progress_label.configure(text="[MATRIX] Initializing query execution...")
+                
+                # Force a brief visual update to ensure it appears
+                if hasattr(self, 'root') and self.root:
+                    try:
+                        self.root.update_idletasks()
+                    except:
+                        pass  # Ignore update errors
+                
+                print("DEBUG: Progress bar shown successfully with initial 10% progress")
+            except Exception as e:
+                print(f"DEBUG: Error showing progress bar: {e}")
+        else:
+            print("DEBUG: Progress components not found! Make sure you're connected to a database first.")
+            print(f"DEBUG: Has progress_frame: {hasattr(self, 'progress_frame')}")
+            print(f"DEBUG: Has progress_bar: {hasattr(self, 'progress_bar')}")
+            print(f"DEBUG: Has progress_label: {hasattr(self, 'progress_label')}")
+
+    def hide_progress_bar(self):
+        """Hide the progress bar"""
+        print("DEBUG: hide_progress_bar called")
+        if hasattr(self, 'progress_frame'):
+            try:
+                self.progress_frame.pack_forget()
+                print("DEBUG: Progress bar hidden successfully")
+            except Exception as e:
+                print(f"DEBUG: Error hiding progress bar: {e}")
+        else:
+            print("DEBUG: Progress frame not found for hiding!")
+
+    def update_progress(self, value, message):
+        """Thread-safe progress bar update"""
+        def _update_ui():
+            """Internal UI update function"""
+            print(f"DEBUG: Progress update - {value*100:.0f}% - {message}")
+            if hasattr(self, 'progress_bar') and hasattr(self, 'progress_label'):
+                try:
+                    self.progress_bar.set(value)
+                    self.progress_label.configure(text=f"[{value*100:.0f}%] {message}")
+                    print(f"DEBUG: Progress updated to {value*100:.0f}%")
+                except Exception as e:
+                    print(f"DEBUG: Progress update error: {e}")
+            else:
+                print("DEBUG: Progress bar components not available")
+
+        # Schedule UI update on main thread if called from background thread
+        if hasattr(self, 'root') and self.root:
+            try:
+                self.root.after(0, _update_ui)
+            except:
+                # Fallback to direct update if scheduling fails
+                _update_ui()
+        else:
+            _update_ui()
 
     def show_query_executing(self, query_type, sql, params):
-        """Display query execution state"""
+        """Display query execution state with Matrix-themed progress bar"""
+        # Show progress bar first
+        self.show_progress_bar()
+        # Add initial progress update to show it's working
+        self.update_progress(0.05, "Starting query execution...")
+        
         if hasattr(self, 'sql_text'):
             self.sql_text.delete("1.0", "end")
             
@@ -965,13 +939,27 @@ class CanvasDataApp:
             
         if hasattr(self, 'results_text'):
             self.results_text.delete("1.0", "end")
-            self.results_text.insert("1.0", f"🔄 Executing {query_type} query...\n\nStatus: Running\nStarted: {datetime.now().strftime('%H:%M:%S')}\nParameters:\n  Username: {params.get('username')}\n  Date Range: {params.get('from_date')} to {params.get('to_date')}\n\nProgress will be shown here...")
+            results_text = f"🔄 EXECUTING {query_type.upper()} QUERY...\n"
+            results_text += f"{'='*50}\n\n"
+            results_text += f"Status: RUNNING\n"
+            results_text += f"Started: {datetime.now().strftime('%H:%M:%S')}\n"
+            results_text += f"Parameters:\n"
+            results_text += f"  • Username: {params.get('username')}\n"
+            results_text += f"  • Date Range: {params.get('from_date')} to {params.get('to_date')}\n"
+            results_text += f"  • Geolocation: {'ENABLED' if params.get('include_geolocation') else 'DISABLED'}\n"
+            results_text += f"  • Excel Export: {'ENABLED' if params.get('export_excel') else 'DISABLED'}\n\n"
+            results_text += f"Progress tracking active...\n"
+            results_text += f"{'='*50}"
+            self.results_text.insert("1.0", results_text)
             
         if hasattr(self, 'results_status'):
             self.results_status.configure(text="🔄 Executing...")
 
-    def show_query_results(self, query_type, row_count, filename, execution_time, success=True):
-        """Display query results"""
+    def show_query_results(self, query_type, row_count, filename, execution_time, success=True, exported_to_excel=True, included_geolocation=True):
+        """Display query results and hide progress bar"""
+        # Hide progress bar now that query is complete
+        self.hide_progress_bar()
+        
         if hasattr(self, 'results_text'):
             self.results_text.delete("1.0", "end")
             
@@ -979,11 +967,28 @@ class CanvasDataApp:
                 results_text = f"{query_type.upper()} Query Completed Successfully!\n\n"
                 results_text += f"Results Summary:\n"
                 results_text += f"Rows Retrieved: {row_count:,}\n"
-                results_text += f"Export File: {filename}\n"
                 results_text += f"Execution Time: {execution_time}\n"
                 results_text += f"Completed: {datetime.now().strftime('%H:%M:%S')}\n\n"
-                results_text += f"File Location: {os.path.abspath(filename)}\n\n"
-                results_text += f"Geographic Data: {'✅ Included' if row_count > 0 else '❌ No data'}\n"
+                
+                # Show export status
+                if exported_to_excel and filename and filename != "No file exported":
+                    results_text += f"Excel Export: {filename}\n"
+                    try:
+                        results_text += f"File Location: {os.path.abspath(filename)}\n\n"
+                    except:
+                        results_text += f"File Location: {filename}\n\n"
+                else:
+                    results_text += f"Excel Export: Skipped (user disabled)\n\n"
+                
+                # Show geolocation status
+                if included_geolocation and row_count > 0:
+                    geo_status = "Included"
+                elif not included_geolocation:
+                    geo_status = "Skipped (user disabled)"
+                else:
+                    geo_status = "No data"
+                
+                results_text += f"Geographic Data: {geo_status}\n"
                 results_text += f"Caching: Active (speeds up future queries)\n\n"
                 results_text += f"Ready for next query..."
                 
@@ -1203,34 +1208,61 @@ class CanvasDataApp:
         print("DEBUG: Calling show_query_executing...")
         self.show_query_executing(query_type, sql_query, params)
         
-        # Execute query with timing
+        # Execute query in background thread to prevent UI freezing
         start_time = datetime.now()
         
+        def run_query_thread():
+            """Run query in background thread"""
+            try:
+                print("DEBUG: Starting threaded query execution...")
+                result = self.run_query_with_panel_updates(self.active_engine, sql_query, params, query_type)
+                print(f"DEBUG: Threaded query execution completed. Result: {result is not None}")
+                
+                end_time = datetime.now()
+                execution_time = str(end_time - start_time).split('.')[0]
+                
+                # Schedule UI update on main thread
+                self.root.after(0, lambda: self.handle_query_completion(result, query_type, execution_time))
+                
+            except Exception as e:
+                end_time = datetime.now()
+                execution_time = str(end_time - start_time).split('.')[0]
+                print(f"DEBUG: Threaded query error: {e}")
+                # Schedule error handling on main thread
+                self.root.after(0, lambda: self.handle_query_error(query_type, execution_time, str(e)))
+        
+        # Start query in background thread
+        query_thread = threading.Thread(target=run_query_thread, daemon=True)
+        query_thread.start()
+        print("DEBUG: Query started in background thread - UI should remain responsive")
+
+    def handle_query_completion(self, result, query_type, execution_time):
+        """Handle successful query completion on main thread"""
         try:
-            print("DEBUG: Starting query execution...")
-            result = self.run_query_with_panel_updates(self.active_engine, sql_query, params, query_type)
-            print(f"DEBUG: Query execution completed. Result: {result is not None}")
-            
-            end_time = datetime.now()
-            execution_time = str(end_time - start_time).split('.')[0]  # Remove microseconds
-            
             if result and isinstance(result, dict):
                 self.show_query_results(
                     query_type, 
                     result.get('row_count', 0), 
                     result.get('filename', ''), 
                     execution_time, 
-                    success=True
+                    success=True,
+                    exported_to_excel=result.get('exported_to_excel', True),
+                    included_geolocation=result.get('included_geolocation', True)
                 )
             else:
                 self.show_query_results(query_type, 0, "", execution_time, success=False)
                 if messagebox.askyesno("Error", "Query execution failed. Try again?"):
                     self.run_query_workflow(query_type)
         except Exception as e:
-            end_time = datetime.now()
-            execution_time = str(end_time - start_time).split('.')[0]
+            print(f"DEBUG: Error in completion handler: {e}")
+
+    def handle_query_error(self, query_type, execution_time, error_message):
+        """Handle query error on main thread"""
+        try:
             self.show_query_results(query_type, 0, "", execution_time, success=False)
-            messagebox.showerror("Error", f"An unexpected error occurred:\n{str(e)}")
+            messagebox.showerror("Error", f"Query execution failed:\n{error_message}")
+        except Exception as e:
+            print(f"DEBUG: Error in error handler: {e}")
 
     def run_query_with_panel_updates(self, engine, sql, params, name):
         """Modified run_query that updates the results panel with progress - OPTIMIZED"""
@@ -1240,6 +1272,7 @@ class CanvasDataApp:
         
         # Update panel with connection verification
         self.update_query_progress("Verifying database connection...")
+        self.update_progress(0.15, "Verifying database connection")
         
         if engine is None:
             self.update_query_progress("Error: Database connection not initialized")
@@ -1249,8 +1282,11 @@ class CanvasDataApp:
             conn = engine.connect()
             conn.close()
             self.update_query_progress("Database connection verified")
+            self.update_progress(0.2, "Database connection verified")
+            print("DEBUG: Database connection test passed")
         except Exception as e:
             self.update_query_progress(f"Connection test failed: {str(e)}")
+            print(f"DEBUG: Database connection test failed: {e}")
             return None
         
         def is_valid_ip(ip):
@@ -1265,18 +1301,26 @@ class CanvasDataApp:
 
         try:
             self.update_query_progress("Preparing query execution...")
+            self.update_progress(0.25, "Preparing query execution")
             conn = engine.raw_connection()
             
             try:
                 # OPTIMIZATION: Skip row counting for small expected datasets, execute directly
                 self.update_query_progress("Executing query (optimized - no pre-counting)...")
+                self.update_progress(0.3, "Executing SQL query")
+                
+                print(f"DEBUG: About to execute SQL query...")
+                print(f"DEBUG: SQL preview: {sql[:100]}...")
+                print(f"DEBUG: Parameters: {params}")
                 
                 start_query_time = time.time()
                 df = pd.read_sql(sql, conn, params=params)
                 query_time = time.time() - start_query_time
                 
                 total_rows = len(df)
+                print(f"DEBUG: SQL execution completed - {total_rows} rows in {query_time:.2f}s")
                 self.update_query_progress(f"Query completed in {query_time:.2f}s - Retrieved {total_rows:,} rows")
+                self.update_progress(0.6, f"Retrieved {total_rows:,} rows")
                 
                 # If result set is unexpectedly large, warn user
                 if total_rows > MAX_ROWS:
@@ -1293,8 +1337,11 @@ class CanvasDataApp:
         except Exception as e:
             self.update_query_progress(f"Query execution failed: {str(e)}")
             print(f"DEBUG: Query execution error: {e}")
+            print(f"DEBUG: Error type: {type(e).__name__}")
             import traceback
             traceback.print_exc()
+            # Make sure to hide progress bar on error
+            self.hide_progress_bar()
             return None
 
         # Process data - OPTIMIZED
@@ -1303,71 +1350,111 @@ class CanvasDataApp:
             datetime_cols = df.select_dtypes(include=["datetimetz"]).columns
             if len(datetime_cols) > 0:
                 self.update_query_progress("Processing datetime columns...")
+                self.update_progress(0.65, "Processing datetime columns")
                 for col in datetime_cols:
                     df[col] = df[col].dt.tz_localize(None)
         
-        # Geolocation processing - OPTIMIZED
-        try:
-            self.update_query_progress("Processing IP geolocation...")
-            from ip_geolocation import IPGeolocation
-            geoip = IPGeolocation()
-            ip_column = 'ip_at_submit' if name == 'submissions' else 'ip'
-            
-            if ip_column in df.columns and len(df) > 0:
-                # OPTIMIZATION: Use optimized geolocation processing
-                geo_start_time = time.time()
-                df = geoip.process_dataframe(df, ip_column)
-                geo_time = time.time() - geo_start_time
-                self.update_query_progress(f"Geolocation completed in {geo_time:.2f}s")
-        except Exception as e:
-            self.update_query_progress(f"Geolocation processing failed: {str(e)}")
+        # Geolocation processing - OPTIMIZED (OPTIONAL)
+        # CRITICAL: Only process if explicitly enabled by user
+        geolocation_enabled = params.get('include_geolocation', False)  # Changed default to False for safety
+        print(f"DEBUG: Geolocation setting: {geolocation_enabled}")
+        
+        if geolocation_enabled is True:
+            try:
+                self.update_query_progress("Processing IP geolocation...")
+                self.update_progress(0.7, "Processing IP geolocation")
+                # Import only when needed to avoid any initialization delays
+                from ip_geolocation import IPGeolocation
+                geoip = IPGeolocation()
+                ip_column = 'ip_at_submit' if name == 'submissions' else 'ip'
+                
+                if ip_column in df.columns and len(df) > 0:
+                    # OPTIMIZATION: Use optimized geolocation processing
+                    geo_start_time = time.time()
+                    df = geoip.process_dataframe(df, ip_column)
+                    geo_time = time.time() - geo_start_time
+                    self.update_query_progress(f"Geolocation completed in {geo_time:.2f}s")
+                    self.update_progress(0.8, f"Geolocation complete ({geo_time:.1f}s)")
+                else:
+                    self.update_query_progress("No IP column found or empty dataset")
+                    self.update_progress(0.8, "No geolocation data to process")
+            except Exception as e:
+                self.update_query_progress(f"Geolocation processing failed: {str(e)}")
+                self.update_progress(0.8, "Geolocation failed - continuing")
+                print(f"DEBUG: Geolocation error: {e}")
+        else:
+            self.update_query_progress("Skipping IP geolocation (user disabled)")
+            self.update_progress(0.8, "Geolocation skipped")
+            print("DEBUG: Geolocation processing skipped")
 
-        # Export to Excel
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{name.capitalize()}Logs_{params['username']}_{timestamp}.xlsx"
+        # Excel Export (OPTIONAL)
+        filename = None
+        estimated_size = 0
+        
+        # CRITICAL: Only export if explicitly enabled by user  
+        excel_enabled = params.get('export_excel', False)  # Changed default to False for safety
+        print(f"DEBUG: Excel export setting: {excel_enabled}")
+        
+        if excel_enabled is True:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{name.capitalize()}Logs_{params['username']}_{timestamp}.xlsx"
 
-        # OPTIMIZATION: Skip memory calculation for small datasets
-        if len(df) > SMALL_DATASET_THRESHOLD:
-            self.update_query_progress("Calculating file size...")
-            estimated_size = df.memory_usage(deep=True).sum() / (1024 * 1024)
+            # OPTIMIZATION: Skip memory calculation for small datasets
+            if len(df) > SMALL_DATASET_THRESHOLD:
+                self.update_query_progress("Calculating file size...")
+                self.update_progress(0.85, "Calculating Excel file size")
+                estimated_size = df.memory_usage(deep=True).sum() / (1024 * 1024)
+                
+                if estimated_size > 50:
+                    if not messagebox.askyesno("Large File Warning", 
+                        f"The Excel file will be approximately {estimated_size:.1f}MB. Continue?"):
+                        self.update_query_progress("Export cancelled by user")
+                        return None
+            else:
+                # For small datasets, estimate a small file size
+                estimated_size = len(df) * 0.001  # Rough estimate: ~1KB per row
+
+            self.update_query_progress(f"Saving to Excel: {filename}")
+            self.update_progress(0.9, f"Exporting {len(df):,} rows to Excel")
             
-            if estimated_size > 50:
-                if not messagebox.askyesno("Large File Warning", 
-                    f"The Excel file will be approximately {estimated_size:.1f}MB. Continue?"):
-                    self.update_query_progress("Export cancelled by user")
+            max_retries = 3
+            print(f"DEBUG: About to save {len(df)} rows to {filename}")
+            for attempt in range(max_retries):
+                try:
+                    df.to_excel(filename, index=False)
+                    self.update_query_progress("File saved successfully!")
+                    self.update_progress(0.98, "Excel file saved successfully")
+                    print(f"DEBUG: File saved successfully!")
+                    break
+                    
+                except PermissionError:
+                    if attempt < max_retries - 1:
+                        retry = messagebox.askretrycancel("File in Use", 
+                            f"Unable to save {filename}. The file may be open. Close it and retry?")
+                        if retry:
+                            continue
+                    self.update_query_progress("Export failed: File in use")
+                    return None
+                except Exception as e:
+                    self.update_query_progress(f"Export failed: {str(e)}")
                     return None
         else:
-            # For small datasets, estimate a small file size
-            estimated_size = len(df) * 0.001  # Rough estimate: ~1KB per row
-
-        self.update_query_progress(f"Saving to Excel: {filename}")
+            self.update_query_progress("Skipping Excel export (user disabled)")
+            self.update_progress(0.98, "Excel export skipped")
+            
+        # Final completion
+        self.update_progress(1.0, "Query execution complete!")
         
-        max_retries = 3
-        print(f"DEBUG: About to save {len(df)} rows to {filename}")
-        for attempt in range(max_retries):
-            try:
-                df.to_excel(filename, index=False)
-                self.update_query_progress("File saved successfully!")
-                
-                print(f"DEBUG: File saved successfully! Returning success result.")
-                # Return success info for panel display
-                return {
-                    'row_count': len(df),
-                    'filename': filename,
-                    'file_size': estimated_size
-                }
-                
-            except PermissionError:
-                if attempt < max_retries - 1:
-                    retry = messagebox.askretrycancel("File in Use", 
-                        f"Unable to save {filename}. The file may be open. Close it and retry?")
-                    if retry:
-                        continue
-                self.update_query_progress("Export failed: File in use")
-                return None
-            except Exception as e:
-                self.update_query_progress(f"Export failed: {str(e)}")
-                return None
+        # Return success info for panel display
+        print(f"DEBUG: Query completed successfully! Returning result.")
+        print(f"DEBUG: Final status - Geolocation: {geolocation_enabled}, Excel: {excel_enabled}")
+        return {
+            'row_count': len(df),
+            'filename': filename if filename else "No file exported",
+            'file_size': estimated_size,
+            'exported_to_excel': excel_enabled,  # Use actual processed value
+            'included_geolocation': geolocation_enabled  # Use actual processed value
+        }
 
     # --------- App entry ---------
     def run(self):
