@@ -183,7 +183,6 @@ def get_db_connection(parent=None):
         
         progress_bar.set(0.1)
         progress_label.configure(text="Validating connection details...")
-        root.update()
 
         user = user_entry.get().strip()
         password = pass_entry.get().strip()
@@ -206,7 +205,6 @@ def get_db_connection(parent=None):
         try:
             progress_bar.set(0.3)
             progress_label.configure(text="Preparing connection string...")
-            root.update()
 
             if re.search("redshift", host, re.IGNORECASE):
                 conn_str = f"redshift+psycopg2://{user}:{password}@{host}:{port_num}/{db}"
@@ -215,13 +213,11 @@ def get_db_connection(parent=None):
 
             progress_bar.set(0.5)
             progress_label.configure(text="Creating database engine...")
-            root.update()
 
             temp_engine = create_engine(conn_str)
             
             progress_bar.set(0.7)
             progress_label.configure(text="Testing connection...")
-            root.update()
             
             conn = None
             try:
@@ -236,7 +232,6 @@ def get_db_connection(parent=None):
 
             progress_bar.set(1.0)
             progress_label.configure(text="Connection successful!")
-            root.update()
 
             engine = temp_engine
             
@@ -336,7 +331,6 @@ def get_db_connection(parent=None):
         progress_frame.pack(pady=10, padx=20, fill="x", expand=True)
         progress_bar.set(0.1)
         progress_label.configure(text="Initializing connection...")
-        root.update()
         connect_db()
     
     load_saved_credentials()
@@ -372,10 +366,15 @@ def get_db_connection(parent=None):
     return None, None
 
 # ============================================================
-# Queries (same as V3)
+# Query Library System - Enhanced and Expandable
 # ============================================================
 queries = {
-    "activity": """
+    "activity_logs": {
+        "name": "Activity Logs",
+        "description": "User activity tracking with IP geolocation and session details",
+        "icon": "📊",
+        "category": "User Activity",
+        "sql": """
 SELECT DISTINCT 
     r.timestamp AS timestamp_UTC,
     convert_timezone('EST','PST',r.timestamp::timestamp) AS timestamp_EST,
@@ -407,8 +406,19 @@ WHERE p.unique_id = %(username)s
   AND r.timestamp >= to_timestamp(%(from_date)s, 'YYYY-MM-DD HH24:MI:SS')
   AND r.timestamp < to_timestamp(%(to_date)s, 'YYYY-MM-DD HH24:MI:SS')
 ORDER BY r.timestamp""",
-
-    "submissions": """
+        "parameters": [
+            {"name": "username", "type": "text", "label": "Username", "required": True, "placeholder": "Enter Canvas username"},
+            {"name": "from_date", "type": "date", "label": "From Date", "required": True},
+            {"name": "to_date", "type": "date", "label": "To Date", "required": True}
+        ]
+    },
+    
+    "submissions": {
+        "name": "Submissions Analysis",
+        "description": "Assignment submission tracking with activity correlation and timing analysis",
+        "icon": "📝",
+        "category": "Academic Activity",
+        "sql": """
 WITH fs AS (
   SELECT
       s.user_id,
@@ -493,7 +503,90 @@ LEFT JOIN matched m
  AND m.assignment_id = fs.assignment_id
  And m.submitted_at = fs.submitted_at
  AND m.rn = 1
-ORDER BY fs.submitted_at"""
+ORDER BY fs.submitted_at""",
+        "parameters": [
+            {"name": "username", "type": "text", "label": "Username", "required": True, "placeholder": "Enter Canvas username"},
+            {"name": "from_date", "type": "date", "label": "From Date", "required": True},
+            {"name": "to_date", "type": "date", "label": "To Date", "required": True}
+        ]
+    },
+
+    "grade_changes": {
+        "name": "Grade Change History",
+        "description": "Track grade modifications and audit trail with user details",
+        "icon": "📈",
+        "category": "Academic Activity",
+        "sql": """
+SELECT 
+    gc.created_at AS change_timestamp,
+    convert_timezone('EST','PST',gc.created_at::timestamp) AS change_timestamp_est,
+    p.unique_id AS username,
+    co.sis_source_id AS course_sis_id,
+    co.name AS course_name,
+    a.title AS assignment,
+    gc.old_grade,
+    gc.new_grade,
+    gc.old_score,
+    gc.new_score,
+    grader_p.unique_id AS grader_username,
+    gc.grading_type,
+    s.workflow_state AS submission_state
+FROM grade_change_logs gc
+JOIN submissions s ON gc.submission_id = s.id
+JOIN assignments a ON s.assignment_id = a.id
+JOIN courses co ON a.context_id = co.id AND a.context_type = 'Course'
+JOIN pseudonyms p ON gc.student_id = p.user_id
+LEFT JOIN pseudonyms grader_p ON gc.grader_id = grader_p.user_id
+WHERE (%(username)s = '' OR p.unique_id = %(username)s)
+  AND (%(course_id)s = '' OR co.sis_source_id = %(course_id)s)
+  AND gc.created_at >= to_timestamp(%(from_date)s, 'YYYY-MM-DD HH24:MI:SS')
+  AND gc.created_at < to_timestamp(%(to_date)s, 'YYYY-MM-DD HH24:MI:SS')
+ORDER BY gc.created_at DESC""",
+        "parameters": [
+            {"name": "username", "type": "text", "label": "Username (Optional)", "required": False, "placeholder": "Leave blank for all users"},
+            {"name": "course_id", "type": "text", "label": "Course SIS ID (Optional)", "required": False, "placeholder": "Leave blank for all courses"},
+            {"name": "from_date", "type": "date", "label": "From Date", "required": True},
+            {"name": "to_date", "type": "date", "label": "To Date", "required": True}
+        ]
+    },
+
+    "login_activity": {
+        "name": "Login Activity Report",
+        "description": "Track user login patterns, session creation, and access locations",
+        "icon": "🔐", 
+        "category": "User Activity",
+        "sql": """
+SELECT 
+    s.created_at AS login_timestamp,
+    convert_timezone('EST','PST',s.created_at::timestamp) AS login_timestamp_est,
+    p.unique_id AS username,
+    s.session_token,
+    r.remote_ip AS login_ip,
+    r.user_agent,
+    r.http_status,
+    CASE 
+        WHEN r.web_application_controller = 'login' AND r.web_application_action = 'new' THEN 'Login Page'
+        WHEN r.web_application_controller = 'login' AND r.web_application_action = 'create' THEN 'Login Success'
+        WHEN r.web_application_controller = 'sessions' AND r.web_application_action = 'destroy' THEN 'Logout'
+        ELSE 'Session Activity'
+    END AS activity_type,
+    r.URL AS access_url
+FROM sessions s
+JOIN pseudonyms p ON s.user_id = p.user_id
+LEFT JOIN web_logs r ON s.session_token = r.session_id 
+    AND r.timestamp BETWEEN s.created_at - INTERVAL '5 minutes' AND s.created_at + INTERVAL '5 minutes'
+WHERE (%(username)s = '' OR p.unique_id = %(username)s)
+  AND (%(ip_filter)s = '' OR r.remote_ip LIKE %(ip_filter)s)
+  AND s.created_at >= to_timestamp(%(from_date)s, 'YYYY-MM-DD HH24:MI:SS')
+  AND s.created_at < to_timestamp(%(to_date)s, 'YYYY-MM-DD HH24:MI:SS')
+ORDER BY s.created_at DESC""",
+        "parameters": [
+            {"name": "username", "type": "text", "label": "Username (Optional)", "required": False, "placeholder": "Leave blank for all users"},
+            {"name": "ip_filter", "type": "text", "label": "IP Address Filter (Optional)", "required": False, "placeholder": "e.g., 192.168.% or specific IP"},
+            {"name": "from_date", "type": "date", "label": "From Date", "required": True},
+            {"name": "to_date", "type": "date", "label": "To Date", "required": True}
+        ]
+    }
 }
 
 # ============================================================
@@ -693,36 +786,37 @@ class CanvasDataApp:
         conn_text = f"🟢 Connected to {self.active_meta.get('database','')} as {self.active_meta.get('username','')}"
         ctk.CTkLabel(header_frame, text=conn_text, font=("Segoe UI", 12)).pack(side="left", padx=15, pady=15)
 
-        # Query buttons in header
-        btn_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
-        btn_frame.pack(side="right", padx=15, pady=10)
+        # Query selection dropdown system
+        query_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
+        query_frame.pack(side="right", padx=15, pady=10)
 
-        def debug_activity_click():
-            print("DEBUG: Activity Logs button clicked!")
-            self.run_query_workflow("activity")
-            
-        def debug_submissions_click():
-            print("DEBUG: Submissions button clicked!")
-            self.run_query_workflow("submissions")
+        ctk.CTkLabel(query_frame, text="Select Query:", font=("Segoe UI", 11, "bold")).pack(side="left", padx=(0, 8))
+
+        # Build dropdown options with icons and names
+        query_options = [f"{q['icon']} {q['name']}" for q in queries.values()]
+        self.query_dropdown = ctk.CTkComboBox(
+            query_frame,
+            values=query_options,
+            width=220,
+            height=32,
+            font=("Segoe UI", 11),
+            state="readonly",
+            dropdown_font=("Segoe UI", 10)
+        )
+        self.query_dropdown.pack(side="left", padx=5)
+        # Set default to first option (which will be properly formatted)
+        if query_options:
+            self.query_dropdown.set(query_options[0])
 
         ctk.CTkButton(
-            btn_frame,
-            text="📊 Activity Logs",
-            command=debug_activity_click,
+            query_frame,
+            text="� Execute Query",
+            command=self.execute_selected_query,
             width=140,
             height=32,
             font=("Segoe UI", 11, "bold"),
-            fg_color="#2b5797"
-        ).pack(side="left", padx=5)
-
-        ctk.CTkButton(
-            btn_frame,
-            text="📝 Submissions",
-            command=debug_submissions_click,
-            width=140,
-            height=32,
-            font=("Segoe UI", 11, "bold"),
-            fg_color="#2b5797"
+            fg_color="#2b5797",
+            hover_color="#1e4a7a"
         ).pack(side="left", padx=5)
 
         # Main query workspace - split between SQL and Results
@@ -865,12 +959,7 @@ class CanvasDataApp:
                 self.progress_bar.set(0.1)  # Set to 10% to make it visible immediately
                 self.progress_label.configure(text="[MATRIX] Initializing query execution...")
                 
-                # Force a brief visual update to ensure it appears
-                if hasattr(self, 'root') and self.root:
-                    try:
-                        self.root.update_idletasks()
-                    except:
-                        pass  # Ignore update errors
+                # Skip manual updates to avoid CustomTkinter conflicts
                 
                 print("DEBUG: Progress bar shown successfully with initial 10% progress")
             except Exception as e:
@@ -1172,7 +1261,297 @@ class CanvasDataApp:
             else:
                 messagebox.showerror("Error", "Failed to clear credentials")
 
-    # --------- Query workflow (unchanged behaviors) ---------
+    # --------- Query Library System Methods ---------
+    def execute_selected_query(self):
+        """Execute the query selected in dropdown"""
+        print("DEBUG: execute_selected_query called!")
+        
+        # Check if we're connected to a database
+        if not self.active_engine:
+            messagebox.showerror("No Connection", "Please connect to a database first before running queries.")
+            return
+        
+        # Check if dropdown exists and has selection
+        if not hasattr(self, 'query_dropdown'):
+            print("DEBUG: query_dropdown attribute not found!")
+            messagebox.showerror("Error", "Query dropdown not initialized")
+            return
+            
+        selected_text = self.query_dropdown.get()
+        print(f"DEBUG: Selected text from dropdown: '{selected_text}'")
+        
+        if not selected_text:
+            messagebox.showwarning("No Selection", "Please select a query to execute")
+            return
+            
+        # Parse selection to get query key
+        query_key = self.parse_query_selection(selected_text)
+        print(f"DEBUG: Parsed query key: '{query_key}'")
+        
+        if not query_key:
+            messagebox.showerror("Invalid Selection", f"Could not identify the selected query: '{selected_text}'")
+            return
+            
+        print(f"DEBUG: Executing query '{query_key}' from dropdown selection")
+        
+        # Get parameters for this specific query
+        try:
+            params = self.get_dynamic_query_parameters(query_key)
+            print(f"DEBUG: Got parameters: {params is not None}")
+        except Exception as e:
+            print(f"DEBUG: Error getting parameters: {e}")
+            messagebox.showerror("Parameter Error", f"Error opening parameter dialog: {str(e)}")
+            return
+            
+        if not params:
+            print("DEBUG: Parameter dialog cancelled or failed")
+            return
+            
+        # Execute with dynamic SQL and parameters
+        try:
+            query_config = queries[query_key]
+            print(f"DEBUG: Starting query execution for '{query_config['name']}'")
+            self.run_query_workflow_dynamic(query_key, query_config, params)
+        except Exception as e:
+            print(f"DEBUG: Error in query execution: {e}")
+            messagebox.showerror("Execution Error", f"Error executing query: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def parse_query_selection(self, selected_text):
+        """Parse dropdown selection text to get query key"""
+        print(f"DEBUG: Parsing selection: '{selected_text}'")
+        print(f"DEBUG: Available queries: {list(queries.keys())}")
+        
+        for key, config in queries.items():
+            expected_text = f"{config['icon']} {config['name']}"
+            print(f"DEBUG: Checking against '{expected_text}' for key '{key}'")
+            print(f"DEBUG: String comparison: '{selected_text}' == '{expected_text}' -> {selected_text == expected_text}")
+            if selected_text == expected_text:
+                print(f"DEBUG: Match found! Returning key: '{key}'")
+                return key
+        
+        print("DEBUG: No match found for selection")
+        print(f"DEBUG: Selected text length: {len(selected_text)}")
+        print(f"DEBUG: Selected text repr: {repr(selected_text)}")
+        return None
+
+    def get_dynamic_query_parameters(self, query_key):
+        """Generate parameter dialog based on query configuration"""
+        query_config = queries[query_key]
+        params = {}
+        MAX_DATE_RANGE_DAYS = 90
+
+        def validate_date(date_str):
+            try:
+                return datetime.strptime(date_str, "%Y-%m-%d")
+            except ValueError:
+                return None
+
+        def on_closing():
+            params.clear()
+            root.destroy()
+
+        def submit():
+            # Collect all parameter values
+            collected_params = {}
+            
+            # Validate required fields
+            for param_config in query_config["parameters"]:
+                param_name = param_config["name"]
+                entry_widget = entries[param_name]
+                value = entry_widget.get().strip()
+                
+                if param_config["required"] and not value:
+                    messagebox.showerror("Missing Required Field", f"{param_config['label']} is required.")
+                    return
+                    
+                collected_params[param_name] = value
+            
+            # Date validation
+            if "from_date" in collected_params and "to_date" in collected_params:
+                from_dt = validate_date(collected_params["from_date"])
+                to_dt = validate_date(collected_params["to_date"])
+
+                if not from_dt or not to_dt:
+                    messagebox.showerror("Invalid Date", "Dates must be in YYYY-MM-DD format.")
+                    return
+
+                if to_dt < from_dt:
+                    messagebox.showerror("Invalid Dates", "'To Date' must be after 'From Date'.")
+                    return
+
+                date_range = (to_dt - from_dt).days
+                if date_range > MAX_DATE_RANGE_DAYS:
+                    messagebox.showerror("Invalid Date Range", 
+                                       f"Date range cannot exceed {MAX_DATE_RANGE_DAYS} days.")
+                    return
+
+            # Add processing options
+            collected_params["include_geolocation"] = include_geo_var.get()
+            collected_params["export_excel"] = export_excel_var.get()
+            
+            # Copy to return params
+            params.update(collected_params)
+            
+            print(f"DEBUG: Dynamic parameters collected - Geolocation: {params['include_geolocation']}, Excel: {params['export_excel']}")
+            
+            root.destroy()
+
+        # Create modal dialog
+        root = ctk.CTkToplevel()
+        root.title(f"Parameters - {query_config['name']}")
+        root.geometry("520x450")
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+        root.transient()
+        root.grab_set()
+        root.lift()
+        root.focus_force()
+
+        # Header with query info
+        header_frame = ctk.CTkFrame(root, fg_color="#2a2a2a")
+        header_frame.pack(fill="x", padx=10, pady=(10, 5))
+        
+        ctk.CTkLabel(
+            header_frame, 
+            text=f"{query_config['icon']} {query_config['name']}", 
+            font=("Segoe UI", 14, "bold")
+        ).pack(pady=8)
+        
+        ctk.CTkLabel(
+            header_frame, 
+            text=query_config['description'], 
+            font=("Segoe UI", 10),
+            text_color="#b3cde0"
+        ).pack(pady=(0, 8))
+
+        # Parameters frame
+        params_frame = ctk.CTkFrame(root)
+        params_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        entries = {}
+        
+        # Generate form fields dynamically
+        for param_config in query_config["parameters"]:
+            param_name = param_config["name"]
+            label_text = param_config["label"]
+            if param_config["required"]:
+                label_text += " *"
+                
+            ctk.CTkLabel(params_frame, text=label_text).pack(anchor="w", padx=20, pady=(10, 0))
+            
+            entry = ctk.CTkEntry(
+                params_frame, 
+                width=400,
+                placeholder_text=param_config.get("placeholder", "")
+            )
+            entry.pack(padx=20, pady=(0, 5))
+            entries[param_name] = entry
+
+        # Processing options frame
+        options_frame = ctk.CTkFrame(params_frame, fg_color="transparent")
+        options_frame.pack(pady=(15, 0), padx=20, fill="x")
+        
+        ctk.CTkLabel(options_frame, text="Processing Options:", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        
+        # Geolocation checkbox
+        include_geo_var = ctk.BooleanVar(value=True)
+        geo_checkbox = ctk.CTkCheckBox(
+            options_frame,
+            text="Include IP Geolocation (~45s for optimized processing)",
+            variable=include_geo_var,
+            font=("Segoe UI", 11)
+        )
+        geo_checkbox.pack(anchor="w", padx=10, pady=2)
+        
+        # Excel export checkbox  
+        export_excel_var = ctk.BooleanVar(value=True)
+        excel_checkbox = ctk.CTkCheckBox(
+            options_frame,
+            text="Export to Excel file",
+            variable=export_excel_var,
+            font=("Segoe UI", 11)
+        )
+        excel_checkbox.pack(anchor="w", padx=10, pady=2)
+
+        # Submit button
+        ctk.CTkButton(
+            root, 
+            text="🚀 Execute Query", 
+            command=submit, 
+            fg_color="#2b5797",
+            font=("Segoe UI", 12, "bold"), 
+            corner_radius=10,
+            width=200,
+            height=40
+        ).pack(pady=20)
+
+        root.wait_window(root)
+        return params
+
+    def run_query_workflow_dynamic(self, query_key, query_config, params):
+        """Execute query with dynamic configuration"""
+        print(f"DEBUG: run_query_workflow_dynamic called with query_key='{query_key}'")
+        
+        try:
+            if self.active_engine:
+                print("DEBUG: Testing database connection...")
+                self.active_engine.connect().close()
+                print("DEBUG: Database connection OK")
+            else:
+                print("DEBUG: No active engine found")
+                raise Exception("No database connection")
+        except Exception as e:
+            print(f"DEBUG: Connection error: {e}")
+            messagebox.showerror("Connection Lost", "Database connection was lost. Please add/reconnect.")
+            if hasattr(self, 'show_query_results'):
+                self.show_query_results(query_key, 0, "", "0s", success=False)
+            return
+
+        print("DEBUG: Processing parameters and starting dynamic query...")
+        
+        # Add time suffixes to date parameters
+        if "from_date" in params:
+            params["from_date"] += " 00:00:00"
+        if "to_date" in params:
+            params["to_date"] += " 23:59:59"
+        
+        # Show query in SQL panel
+        sql_query = query_config["sql"]
+        print("DEBUG: Calling show_query_executing...")
+        self.show_query_executing(query_key, sql_query, params)
+        
+        # Execute query in background thread
+        start_time = datetime.now()
+        
+        def run_query_thread():
+            """Run query in background thread"""
+            try:
+                print("DEBUG: Starting threaded dynamic query execution...")
+                result = self.run_query_with_panel_updates(self.active_engine, sql_query, params, query_key)
+                print(f"DEBUG: Threaded dynamic query execution completed. Result: {result is not None}")
+                
+                end_time = datetime.now()
+                execution_time = str(end_time - start_time).split('.')[0]
+                
+                # Schedule UI update on main thread
+                if hasattr(self, 'root') and self.root:
+                    self.root.after(0, lambda: self.handle_query_completion(result, query_key, execution_time))
+                
+            except Exception as e:
+                end_time = datetime.now()
+                execution_time = str(end_time - start_time).split('.')[0]
+                print(f"DEBUG: Threaded dynamic query error: {e}")
+                # Schedule error handling on main thread
+                if hasattr(self, 'root') and self.root:
+                    self.root.after(0, lambda: self.handle_query_error(query_key, execution_time, str(e)))
+        
+        # Start query in background thread
+        query_thread = threading.Thread(target=run_query_thread, daemon=True)
+        query_thread.start()
+        print("DEBUG: Dynamic query started in background thread - UI should remain responsive")
+
+    # --------- Legacy Query Workflow (for backward compatibility) ---------
     def run_query_workflow(self, query_type):
         print(f"DEBUG: run_query_workflow called with query_type='{query_type}'")
         
@@ -1191,9 +1570,13 @@ class CanvasDataApp:
                 self.show_query_results(query_type, 0, "", "0s", success=False)
             return
         
-        print("DEBUG: Opening parameter dialog...")
-        params = get_query_parameters()
-        print(f"DEBUG: Parameter dialog returned: {params}")
+        print("DEBUG: Opening legacy parameter dialog...")
+        # Map old query types to new query keys
+        query_key_map = {"activity": "activity_logs", "submissions": "submissions"}
+        query_key = query_key_map.get(query_type, "activity_logs")  # Default fallback
+        
+        params = self.get_dynamic_query_parameters(query_key)
+        print(f"DEBUG: Legacy parameter dialog returned: {params}")
         if not params:
             print("DEBUG: No parameters provided, returning to ready state")
             self.show_ready_state()
@@ -1203,10 +1586,10 @@ class CanvasDataApp:
         params["from_date"] += " 00:00:00"
         params["to_date"] += " 23:59:59"
         
-        # Show query in SQL panel
-        sql_query = queries[query_type]
+        # Show query in SQL panel using new structure
+        sql_query = queries[query_key]["sql"]
         print("DEBUG: Calling show_query_executing...")
-        self.show_query_executing(query_type, sql_query, params)
+        self.show_query_executing(query_key, sql_query, params)
         
         # Execute query in background thread to prevent UI freezing
         start_time = datetime.now()
@@ -1215,21 +1598,23 @@ class CanvasDataApp:
             """Run query in background thread"""
             try:
                 print("DEBUG: Starting threaded query execution...")
-                result = self.run_query_with_panel_updates(self.active_engine, sql_query, params, query_type)
-                print(f"DEBUG: Threaded query execution completed. Result: {result is not None}")
+                result = self.run_query_with_panel_updates(self.active_engine, sql_query, params, query_key)
+                print(f"DEBUG: Threaded legacy query execution completed. Result: {result is not None}")
                 
                 end_time = datetime.now()
                 execution_time = str(end_time - start_time).split('.')[0]
                 
                 # Schedule UI update on main thread
-                self.root.after(0, lambda: self.handle_query_completion(result, query_type, execution_time))
+                if hasattr(self, 'root') and self.root:
+                    self.root.after(0, lambda: self.handle_query_completion(result, query_key, execution_time))
                 
             except Exception as e:
                 end_time = datetime.now()
                 execution_time = str(end_time - start_time).split('.')[0]
                 print(f"DEBUG: Threaded query error: {e}")
                 # Schedule error handling on main thread
-                self.root.after(0, lambda: self.handle_query_error(query_type, execution_time, str(e)))
+                if hasattr(self, 'root') and self.root:
+                    self.root.after(0, lambda: self.handle_query_error(query_key, execution_time, str(e)))
         
         # Start query in background thread
         query_thread = threading.Thread(target=run_query_thread, daemon=True)
@@ -1366,7 +1751,9 @@ class CanvasDataApp:
                 # Import only when needed to avoid any initialization delays
                 from ip_geolocation import IPGeolocation
                 geoip = IPGeolocation()
-                ip_column = 'ip_at_submit' if name == 'submissions' else 'ip'
+                # Determine correct IP column based on query type
+                ip_column = 'ip_at_submit' if ('submissions' in name.lower()) else 'ip'
+                print(f"DEBUG: Geolocation - Query name: '{name}', Using IP column: '{ip_column}'")
                 
                 if ip_column in df.columns and len(df) > 0:
                     # OPTIMIZATION: Use optimized geolocation processing
