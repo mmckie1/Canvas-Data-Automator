@@ -26,6 +26,7 @@ class IPGeolocation:
         # API endpoints (free services)
         self.primary_api = "http://ip-api.com/json/{}"  # 45,000 requests/hour
         self.fallback_api = "http://ipapi.co/{}/json/"  # 1,000 requests/day
+    self.primary_api_batch = "http://ip-api.com/batch"  # up to 100 IPs per request
         
         # Rate limiting
         self.request_count = 0
@@ -272,6 +273,58 @@ class IPGeolocation:
         # Return null data if both APIs failed
         null_result = self._get_null_location('API lookup failed')
         return null_result
+
+    def _query_ip_api_batch(self, ips: List[str]) -> Dict[str, Dict[str, Optional[Union[str, float]]]]:
+        """Batch query ip-api.com for up to 100 IPs per request.
+
+        Returns a dict mapping ip -> location_data. Any failures will map to null location.
+        """
+        results: Dict[str, Dict[str, Optional[Union[str, float]]]] = {}
+        if not ips:
+            return results
+
+        # ip-api batch supports fields selection via query param; keep payload light.
+        fields = "status,message,query,city,country,lat,lon,timezone,zip,regionName"
+        try:
+            self._rate_limit()
+            resp = requests.post(
+                f"{self.primary_api_batch}?fields={fields}",
+                json=ips,
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                raise Exception(f"batch HTTP {resp.status_code}")
+            data = resp.json()
+            if not isinstance(data, list):
+                raise Exception("unexpected batch response format")
+
+            for item in data:
+                ip = item.get("query")
+                status = item.get("status")
+                if ip is None:
+                    continue
+                if status == "success":
+                    loc = {
+                        'city': item.get('city'),
+                        'country': item.get('country'),
+                        'continent': None,  # not provided by ip-api free endpoint
+                        'latitude': item.get('lat'),
+                        'longitude': item.get('lon'),
+                        'timezone': item.get('timezone'),
+                        'postal_code': item.get('zip'),
+                        'subdivision': item.get('regionName'),
+                        'source': 'ip-api.com(batch)'
+                    }
+                    results[ip] = loc
+                else:
+                    # failed lookup for this IP
+                    results[ip] = self._get_null_location('ip-api.com(batch failed)')
+        except Exception as e:
+            print(f"⚠️ ip-api.com batch failed: {e}")
+            # On total batch failure, return empty dict to allow caller to fallback per-IP
+            return {}
+
+        return results
     
     def get_locations_batch_optimized(self, ips: List[str]) -> Dict[str, Dict[str, Optional[Union[str, float]]]]:
         """Optimized batch processing of multiple IPs with filtering and concurrent requests"""
@@ -306,17 +359,44 @@ class IPGeolocation:
         
         print(f"Cache: {cached_count} IPs found in cache, {len(uncached_ips)} need API calls")
         
-        # Step 3: Process uncached IPs with optimized threading
+        # Step 3: Process uncached IPs using ip-api batch endpoint first (fast path)
         if uncached_ips:
-            if len(uncached_ips) <= 5:
-                # Small batches: process sequentially to respect rate limits
-                print("Processing small batch sequentially...")
-                for ip in uncached_ips:
-                    results[ip] = self.get_location(ip)
-            else:
-                # Larger batches: use threading with controlled concurrency
-                print(f"Processing {len(uncached_ips)} IPs with concurrent requests...")
-                results.update(self._process_concurrent_batch(uncached_ips))
+            batch_size = 100  # ip-api.com batch limit
+            remaining_for_fallback: List[str] = []
+
+            print(f"Processing {len(uncached_ips)} IPs via ip-api.com batch...")
+            for i in range(0, len(uncached_ips), batch_size):
+                chunk = uncached_ips[i:i+batch_size]
+                batch_map = self._query_ip_api_batch(chunk)
+
+                if batch_map:
+                    # store successes and identify failures for fallback
+                    for ip in chunk:
+                        loc = batch_map.get(ip)
+                        if loc and loc.get('city') is not None:
+                            # cache success
+                            try:
+                                self._cache_location(ip, loc, str(loc.get('source', 'unknown')))
+                            except Exception:
+                                pass
+                            results[ip] = loc
+                        else:
+                            remaining_for_fallback.append(ip)
+                else:
+                    # total batch failure for this chunk; push all to fallback
+                    remaining_for_fallback.extend(chunk)
+                # Gentle delay between batches
+                time.sleep(0.2)
+
+            # Step 4: Fallback for any unresolved IPs
+            if remaining_for_fallback:
+                if len(remaining_for_fallback) <= 5:
+                    print(f"Fallback sequential for {len(remaining_for_fallback)} IPs...")
+                    for ip in remaining_for_fallback:
+                        results[ip] = self.get_location(ip)
+                else:
+                    print(f"Fallback concurrent for {len(remaining_for_fallback)} IPs...")
+                    results.update(self._process_concurrent_batch(remaining_for_fallback))
         
         return results
     

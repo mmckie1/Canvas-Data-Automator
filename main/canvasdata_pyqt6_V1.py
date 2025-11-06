@@ -9,6 +9,10 @@ import os
 import re
 from datetime import datetime
 import time
+<<<<<<< Updated upstream
+=======
+import pandas as pd
+>>>>>>> Stashed changes
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QSplitter, QFrame, QLabel, QPushButton, QStatusBar, QToolBar,
@@ -532,6 +536,18 @@ class CanvasDataApp(QMainWindow):
         results_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         results_header_layout.addWidget(results_title)
         
+<<<<<<< Updated upstream
+=======
+        # Summary Report Button (hidden initially)
+        self.summary_report_btn = QPushButton("📄 Generate Summary Report")
+        self.summary_report_btn.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        self.summary_report_btn.setObjectName("summary_report_button")
+        self.summary_report_btn.clicked.connect(self.generate_summary_report)
+        self.summary_report_btn.hide()  # Hidden initially
+        results_header_layout.addWidget(self.summary_report_btn)
+        print("DEBUG: Summary report button created and added to layout")
+        
+>>>>>>> Stashed changes
         # Results status (right side)
         self.results_status_label = QLabel("Ready")
         self.results_status_label.setFont(QFont("Segoe UI", 10))
@@ -766,6 +782,28 @@ class CanvasDataApp(QMainWindow):
             background-color: #164a6b;
         }
         
+<<<<<<< Updated upstream
+=======
+        /* Summary Report Button */
+        QPushButton#summary_report_button {
+            background-color: #28a745;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 12px;
+            color: white;
+            font-weight: bold;
+            margin: 0 8px;
+        }
+        
+        QPushButton#summary_report_button:hover {
+            background-color: #218838;
+        }
+        
+        QPushButton#summary_report_button:pressed {
+            background-color: #1e7e34;
+        }
+        
+>>>>>>> Stashed changes
         /* SQL and Results Text Areas */
         QTextEdit#sql_text_area, QTextEdit#results_text_area {
             background-color: #0f0f0f;
@@ -1123,6 +1161,16 @@ class CanvasDataApp(QMainWindow):
         self.results_text.setPlainText(result_text)
         self.results_status_label.setText(f"Complete ({len(rows):,} rows)")
         
+<<<<<<< Updated upstream
+=======
+        # Store current results for summary report generation
+        self.current_query_results = (rows, columns, params)
+        print(f"DEBUG: Stored query results with {len(columns)} columns: {columns}")
+        
+        # Update summary button visibility based on data compatibility
+        self.update_summary_button_visibility(columns)
+        
+>>>>>>> Stashed changes
         # Hide progress bar after brief delay
         QTimer.singleShot(1000, self.hide_progress_bar)
         
@@ -1139,6 +1187,200 @@ class CanvasDataApp(QMainWindow):
         self.results_text.setPlainText(error_text)
         
         QMessageBox.critical(self, "Query Failed", f"Query execution failed:\n\n{error_message}")
+<<<<<<< Updated upstream
+=======
+    
+    def is_summary_compatible(self, columns):
+        """Check if current query results are compatible with summary report generation.
+        We require only the base submission fields; geolocation is optional.
+        """
+        base_required = ['timestamp_est', 'course_name', 'assignment', 'ip_at_submit']
+        return all(col in columns for col in base_required)
+    
+    def update_summary_button_visibility(self, columns):
+        """Show/hide summary report button based on data compatibility"""
+        print(f"DEBUG: Checking summary button visibility with columns: {columns}")
+        base_required = ['timestamp_est', 'course_name', 'assignment', 'ip_at_submit']
+        legacy_geo_any = ['City', 'Region', 'Country']
+        new_geo_any = ['geo_city', 'geo_subdivision', 'geo_country']
+
+        missing_base = [c for c in base_required if c not in columns]
+        has_legacy_geo = any(c in columns for c in legacy_geo_any)
+        has_new_geo = any(c in columns for c in new_geo_any)
+
+        print(f"DEBUG: Missing base columns: {missing_base}")
+        print(f"DEBUG: Has legacy geo any: {has_legacy_geo}; Has new geo any: {has_new_geo}")
+
+        if hasattr(self, 'summary_report_btn'):
+            is_compatible = self.is_summary_compatible(columns)
+            print(f"DEBUG: Summary compatibility check result: {is_compatible}")
+            if is_compatible:
+                print("DEBUG: Showing summary report button")
+                self.summary_report_btn.show()
+            else:
+                print("DEBUG: Hiding summary report button")
+                self.summary_report_btn.hide()
+        else:
+            print("DEBUG: summary_report_btn not found in self")
+    
+    def generate_summary_report(self):
+        """Generate Word document summary report from current query results"""
+        try:
+            # Check if we have current results
+            if not hasattr(self, 'current_query_results') or not self.current_query_results:
+                QMessageBox.warning(self, "No Data", "No query results available for summary report generation.")
+                return
+            
+            # Extract data from current results
+            rows, columns, params = self.current_query_results
+            
+            # Verify compatibility (double-check)
+            if not self.is_summary_compatible(columns):
+                QMessageBox.warning(self, "Incompatible Data", 
+                    "Current query results are not compatible with summary report generation.\n\n"
+                    "Required columns: timestamp_est, course_name, assignment, ip_at_submit, Country, Region, City")
+                return
+            
+            # Create DataFrame from results
+            df = pd.DataFrame(rows, columns=columns)
+            
+            # Extract student info from parameters
+            username = params.get('username', 'Unknown')
+            student_name, panther_id = self.extract_student_info(username)
+            
+            # Get output location from user
+            from PySide6.QtWidgets import QFileDialog
+            output_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Summary Report",
+                f"Summary_Activity_Report_{student_name.replace(' ', '_')}_{panther_id}.docx",
+                "Word Documents (*.docx)"
+            )
+            
+            if not output_path:
+                return  # User cancelled
+            
+            # Generate the summary report
+            self.create_summary_document(df, student_name, panther_id, output_path)
+            
+            # Show success message
+            QMessageBox.information(self, "Success", 
+                f"Summary report generated successfully!\n\nSaved to:\n{output_path}")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate summary report:\n\n{str(e)}")
+    
+    def extract_student_info(self, username):
+        """Extract student name and Panther ID from username"""
+        # Try to parse username for Panther ID (assuming format like john.doe.12345)
+        parts = username.split('.')
+        
+        if len(parts) >= 3 and parts[-1].isdigit():
+            # Last part is numeric - likely Panther ID
+            panther_id = parts[-1]
+            student_name = ' '.join(parts[:-1]).replace('.', ' ').title()
+        else:
+            # No numeric part found - use username as name, ask for ID
+            student_name = username.replace('.', ' ').title()
+            panther_id = "Unknown"
+        
+        return student_name, panther_id
+    
+    def create_summary_document(self, df, student_name, panther_id, output_path):
+        """Create Word document summary report (adapted from canvas_summary_generator.py)"""
+        from docx import Document
+        from docx.shared import Pt
+        from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+        
+        # Helper function for safe values
+        def safe_val(v, default="Unknown"):
+            if pd.isna(v):
+                return default
+            s = str(v).strip()
+            return s if s else default
+        
+        # Normalize geolocation columns to expected legacy names used in the report
+        if 'City' not in df.columns and 'geo_city' in df.columns:
+            df['City'] = df['geo_city']
+        if 'Region' not in df.columns and 'geo_subdivision' in df.columns:
+            df['Region'] = df['geo_subdivision']
+        if 'Country' not in df.columns and 'geo_country' in df.columns:
+            df['Country'] = df['geo_country']
+
+        # Helper function for timestamp formatting
+        def windows_safe_timestamp(ts):
+            if hasattr(ts, "strftime"):
+                txt = ts.strftime("%m/%d/%Y at %I:%M%p")
+                txt = txt.lstrip("0").replace("/0", "/").replace(" 0", " ")
+                return txt
+            return safe_val(ts)
+        
+        # Parse timestamps
+        df["timestamp_est"] = pd.to_datetime(df["timestamp_est"], errors="coerce")
+        df = df.dropna(subset=["timestamp_est"])
+        
+        if df.empty:
+            raise ValueError("No valid rows with parsable 'timestamp_est' were found.")
+        
+        # Determine latest date and term
+        latest_ts = df["timestamp_est"].max()
+        header_date = latest_ts.strftime("%B %d, %Y")
+        year = latest_ts.year
+        month = latest_ts.month
+        
+        if 1 <= month <= 4:
+            term = "Spring"
+        elif 5 <= month <= 8:
+            term = "Summer"
+        else:
+            term = "Fall"
+        
+        # Create Word document
+        doc = Document()
+        style = doc.styles["Normal"]
+        style.font.name = "Calibri"
+        style.font.size = Pt(11)
+        
+        # Title and header
+        p_title = doc.add_paragraph(f"{student_name} ({panther_id}) logs summary report")
+        p_title.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+        
+        p_header = doc.add_paragraph(f"\n{term} {year} (Till {header_date})")
+        p_header.alignment = WD_PARAGRAPH_ALIGNMENT.LEFT
+        
+        # Group by course
+        courses = df.groupby("course_name", dropna=False)
+        
+        for course_name, group in courses:
+            doc.add_paragraph()  # blank line
+            
+            p_course = doc.add_paragraph(f"Course Name: {safe_val(course_name, '(No Course Name)')}")
+            p_course.runs[0].bold = True
+            
+            p_assign = doc.add_paragraph("Assignments Submitted")
+            p_assign.runs[0].bold = True
+            
+            group = group.sort_values(by="timestamp_est")
+            
+            for _, row in group.iterrows():
+                assignment_name = safe_val(row.get("assignment"))
+                ip = safe_val(row.get("ip_at_submit"))
+                city = safe_val(row.get("City"))
+                region = safe_val(row.get("Region"))
+                country = safe_val(row.get("Country"))
+                location = f"{city}, {region}, {country}"
+                ts_text = windows_safe_timestamp(row["timestamp_est"])
+                
+                entry = doc.add_paragraph()
+                entry.paragraph_format.left_indent = Pt(20)
+                entry.add_run(f"{assignment_name}\n").bold = True
+                entry.add_run(f"Submitted: {ts_text}\n")
+                entry.add_run(f"IP Address: {ip}\n")
+                entry.add_run(f"IP Address location: {location}\n")
+        
+        # Save document
+        doc.save(output_path)
+>>>>>>> Stashed changes
 
 
 class QueryParameterDialog(QDialog):
